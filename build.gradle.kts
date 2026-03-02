@@ -5,6 +5,7 @@ plugins {
 
 group = "com.example"
 version = "0.1.0"
+description = "Persistent keyed work scheduler for stateful systems."
 
 java {
     toolchain {
@@ -12,6 +13,17 @@ java {
     }
     withSourcesJar()
     withJavadocJar()
+}
+
+tasks.withType<Jar>().configureEach {
+    manifest {
+        attributes(
+            "Implementation-Title" to rootProject.name,
+            "Implementation-Version" to project.version,
+            "Implementation-Vendor" to "Michael Melancon",
+            "Implementation-Copyright" to "Copyright (c) 2026 Michael Melancon"
+        )
+    }
 }
 
 repositories {

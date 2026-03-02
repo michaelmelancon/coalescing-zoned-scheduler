@@ -2,6 +2,12 @@
 
 A persistent keyed work scheduler for stateful systems.
 
+## Attribution
+
+Primary author, maintainer, and copyright holder: Michael Melancon.
+
+This repository is licensed under Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [AUTHORS](AUTHORS).
+
 A **Coalescing Zoned Scheduler** maintains **at most one live scheduled entry per logical key**, organizes entries into **ordered zones** such as immediate and delayed, and supports **coalescing reschedules** and **promotion between zones**.
 
 It is designed for workloads where you want to remember:
