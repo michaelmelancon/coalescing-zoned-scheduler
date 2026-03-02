@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+
+# Java / JVM build output
+bin/
+out/
+*.class
+*.jar
+*.war
+*.ear
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+hs_err_pid*
+replay_pid*
+
+# Local runtime data
+kls_database.db
+*.db-journal
+*.sqlite
+*.sqlite3
