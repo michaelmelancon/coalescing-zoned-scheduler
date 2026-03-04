@@ -33,42 +33,44 @@ class CoalescingZonedKeySchedulerTest {
 
     @BeforeEach
     void setUp() {
-        scheduler = new CoalescingZonedKeyScheduler<>(new InMemoryByteArrayKeyValueStore(), Serdes.String());
+        scheduler = new CoalescingZonedKeyScheduler<>(
+                new KeyValueStoreCoalescingZonedScheduler<>(new InMemoryByteArrayKeyValueStore(), Serdes.String(),
+                        org.apache.kafka.common.serialization.Serdes.ByteArray()));
     }
 
     @Test
     void keyOnlySchedulerTracksAndDrainsImmediateAndObservedKeys() {
         scheduler.scheduleNow("immediate");
-        scheduler.scheduleAt("observed", observedAt(10));
+        scheduler.scheduleLater("delayed", observedAt(10));
 
         assertTrue(scheduler.isScheduled("immediate"));
-        assertTrue(scheduler.isScheduled("observed"));
-        assertEquals(1, scheduler.sizeNow());
-        assertEquals(1, scheduler.sizeObserved());
+        assertTrue(scheduler.isScheduled("delayed"));
+        assertEquals(1, scheduler.sizeImmediate());
+        assertEquals(1, scheduler.sizeDelayed());
         assertEquals(2, scheduler.sizeTotal());
-        assertEquals(List.of("immediate"), scheduler.drainImmediate(10));
+        assertEquals(List.of("immediate"), scheduler.drain(10, observedAt(0)));
         assertFalse(scheduler.isScheduled("immediate"));
-        assertEquals(0, scheduler.sizeNow());
-        assertEquals(1, scheduler.sizeObserved());
+        assertEquals(0, scheduler.sizeImmediate());
+        assertEquals(1, scheduler.sizeDelayed());
 
-        assertEquals(List.of("observed"), scheduler.drainReady(10, observedAt(11)));
+        assertEquals(List.of("delayed"), scheduler.drain(10));
         assertEquals(0, scheduler.sizeTotal());
     }
 
     @Test
     void keyOnlySchedulerCancelsScheduledKeys() {
-        scheduler.scheduleAt("observed", observedAt(5));
+        scheduler.scheduleLater("delayed", observedAt(5));
 
-        assertTrue(scheduler.cancel("observed"));
-        assertFalse(scheduler.cancel("observed"));
+        assertTrue(scheduler.cancel("delayed"));
+        assertFalse(scheduler.cancel("delayed"));
         assertFalse(scheduler.cancel("missing"));
-        assertFalse(scheduler.isScheduled("observed"));
-        assertEquals(0, scheduler.sizeNow());
-        assertEquals(0, scheduler.sizeObserved());
+        assertFalse(scheduler.isScheduled("delayed"));
+        assertEquals(0, scheduler.sizeImmediate());
+        assertEquals(0, scheduler.sizeDelayed());
         assertEquals(0, scheduler.sizeTotal());
     }
 
     private static Instant observedAt(long offsetSeconds) {
-        return Instant.ofEpochSecond(CoalescingZonedScheduler.OBSERVED_BOUNDARY + offsetSeconds);
+        return Instant.ofEpochSecond(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY + offsetSeconds);
     }
 }

@@ -2,12 +2,6 @@
 
 A persistent keyed work scheduler for stateful systems.
 
-## Attribution
-
-Primary author, maintainer, and copyright holder: Michael Melancon.
-
-This repository is licensed under Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [AUTHORS](AUTHORS).
-
 A **Coalescing Zoned Scheduler** maintains **at most one live scheduled entry per logical key**, organizes entries into **ordered zones** such as immediate and delayed, and supports **coalescing reschedules** and **promotion between zones**.
 
 It is designed for workloads where you want to remember:
@@ -90,6 +84,18 @@ Use a real queue.
 
 ---
 
+## Backing store matters
+
+This abstraction has favorable logical complexity, but its practical performance depends strongly on the backing data structure.
+
+It is a particularly good fit for **time-ordered delayed scheduling** on an ordered persistent store such as RocksDB.
+
+It is a weaker fit for **very active immediate-zone scheduling** on RocksDB, because each logical update may translate into multiple physical KV-store mutations and associated storage-engine churn.
+
+For immediate-heavy workloads, an **in-memory ordered implementation** is often a better fit, with scheduler state reconstructed from persisted authoritative state during startup when needed.
+
+---
+
 ## Core semantics
 
 ### Invariants
@@ -123,14 +129,14 @@ This is the most natural form when the scheduler only tracks eligibility and the
 ```java
 interface ZonedScheduler<K> {
     void scheduleNow(K key);
-    void scheduleAt(K key, Instant when);
+    void scheduleLater(K key, Instant when);
 
     boolean cancel(K key);
     boolean isScheduled(K key);
 
     List<K> drainReady(int limit);
 
-    long sizeNow();
+    long sizeImmediate();
     long sizeDelayed();
     long sizeTotal();
 }
@@ -144,7 +150,7 @@ interface ZonedScheduler<K> {
 - if `key` is already immediate, this is a no-op
 - if `key` is delayed, it is promoted to immediate
 
-#### `scheduleAt(key, when)`
+#### `scheduleLater(key, when)`
 
 - schedules `key` in the delayed zone
 - if `key` is already immediate, immediate wins
@@ -165,14 +171,14 @@ A payload-carrying variant is also possible:
 ```java
 interface ZonedScheduler<K, P> {
     void scheduleNow(K key, P payload);
-    void scheduleAt(K key, Instant when, P payload);
+    void scheduleLater(K key, Instant when, P payload);
 
     boolean cancel(K key);
     boolean isScheduled(K key);
 
     List<ScheduledItem<K, P>> drainReady(int limit);
 
-    long sizeNow();
+    long sizeImmediate();
     long sizeDelayed();
     long sizeTotal();
 }
@@ -262,6 +268,99 @@ Then:
 
 ---
 
+## Performance characteristics and workload fit
+
+This abstraction has clean abstract-data-type semantics, but its real performance depends heavily on the storage engine used underneath it.
+
+### Important note on complexity
+
+At the ADT level, most operations look constant time:
+
+- keyed lookup
+- schedule now
+- schedule later
+- cancel
+- promote delayed work to immediate
+
+and draining is linear in the number of drained entries.
+
+However, when implemented on top of a persistent ordered key-value store such as RocksDB, these operations are **not free in practice**.
+
+A single logical scheduling operation may require multiple physical operations such as:
+
+- reading the reverse lookup entry
+- deleting an old scheduled position
+- writing a new scheduled position
+- updating the reverse lookup
+- updating metadata and counters
+
+On an LSM-based store, these writes and deletes may also contribute to:
+
+- write amplification
+- tombstone accumulation
+- compaction overhead
+- iterator and cache disruption
+
+So while the abstraction is simple, the realized cost depends strongly on the workload shape.
+
+### Where this abstraction works best on RocksDB
+
+A RocksDB-backed implementation is a strong fit when:
+
+- most scheduled entries are in the **delayed zone**
+- delayed entries are mostly inserted in time order
+- the **immediate zone is used infrequently**
+- promotion from delayed to immediate happens, but is not the dominant traffic pattern
+- draining ready delayed work is more important than high-frequency reordering
+
+This workload shape benefits from the natural ordering of the delayed zone and avoids excessive churn in the immediate zone.
+
+### Where RocksDB becomes a poor fit
+
+A RocksDB-backed implementation is a weaker fit when:
+
+- the **immediate zone is very active**
+- keys are frequently re-scheduled
+- delayed entries are frequently promoted
+- entries are often canceled and rewritten
+- the scheduler behaves like a hot mutable immediate work queue
+
+In those cases, the abstraction may still be semantically correct, but the cost of maintaining keyed movement and coalescing over a persistent LSM store can become too high.
+
+### Recommended implementation strategy
+
+In practice, different workloads may justify different backing implementations:
+
+- **Persistent ordered KV store implementation**
+  - best for delayed, time-ordered, coalescing scheduling
+  - especially effective when immediate work is relatively sparse
+
+- **In-memory ordered implementation**
+  - better for workloads dominated by immediate-zone activity
+  - avoids the churn cost of maintaining hot immediate scheduling directly in RocksDB
+
+A useful hybrid approach is:
+
+1. persist the authoritative state needed to reconstruct scheduling
+2. keep the hot immediate scheduler in memory
+3. rebuild the in-memory scheduler on startup from persisted state
+
+This preserves the abstraction while allowing each workload to use a backing structure that matches its access pattern.
+
+### Practical guidance
+
+Use this abstraction over RocksDB when the system mostly needs:
+
+> “remember that this key should become eligible at or after time T, unless it becomes urgent first”
+
+Be more cautious when the system mostly needs:
+
+> “rapidly insert, cancel, promote, and drain immediate work at high volume”
+
+That second workload often benefits from an in-memory implementation even if scheduler state is reconstructed from persisted data during startup.
+
+---
+
 ## Tradeoffs
 
 This abstraction is intentionally opinionated.
@@ -282,6 +381,7 @@ This abstraction is intentionally opinionated.
 - fairness is only as strong as zone ordering guarantees
 - delayed timestamp granularity matters
 - payload replacement policy must be defined clearly
+- backing-store behavior matters as much as ADT behavior for hot workloads
 
 ---
 
@@ -307,6 +407,7 @@ This abstraction is a poor fit for:
 - independent processing of every submit event
 - multiple concurrent outstanding commands for the same logical key
 - workloads that require strict historical replay
+- extremely hot immediate-only scheduling on a persistent LSM-backed store
 
 ---
 
@@ -336,6 +437,7 @@ Any implementation should define:
 - ordering guarantees within the same timestamp bucket
 - whether immediate ordering counters are recycled when the immediate zone becomes empty
 - whether counts are authoritative or derivable metadata
+- whether the implementation is backed by a persistent ordered store, an in-memory ordered structure, or a hybrid reconstruction model
 
 These are not minor details. They are part of the behavior contract.
 
