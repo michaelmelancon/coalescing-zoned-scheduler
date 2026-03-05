@@ -25,12 +25,10 @@ import java.util.List;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.streams.state.KeyValueIterator;
-import org.apache.kafka.streams.state.KeyValueStore;
 
 /**
  * A persistent keyed scheduler backed by a single
- * {@link KeyValueStore}{@code <byte[], byte[]>}
+ * {@link ByteArrayKeyValueStore}
  * with multiple logical zones, leveraging byte-ordered keys for efficient
  * draining.
  *
@@ -91,14 +89,14 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
     private static final byte[] IMMEDIATE_COUNT_KEY = metadataKey("immediate-count");
     private static final byte[] DELAYED_COUNT_KEY = metadataKey("delayed-count");
 
-    private final KeyValueStore<byte[], byte[]> store;
+    private final ByteArrayKeyValueStore store;
     private final Serializer<K> keySerializer;
     private final Deserializer<K> keyDeserializer;
     private final Serializer<P> payloadSerializer;
     private final Deserializer<P> payloadDeserializer;
 
     public KeyValueStoreCoalescingZonedScheduler(
-            KeyValueStore<byte[], byte[]> store,
+            ByteArrayKeyValueStore store,
             Serde<K> keySerde,
             Serde<P> payloadSerde) {
         this.store = store;
@@ -240,11 +238,10 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
         int drainedImmediateCount = 0;
         int drainedObservedCount = 0;
 
-        try (KeyValueIterator<byte[], byte[]> iterator = (toExclusive != null) ? store.range(fromInclusive, toExclusive)
-                : store.range(fromInclusive, null)) {
+        try (ByteArrayKeyValueStore.RangeIterator iterator = store.range(fromInclusive, toExclusive)) {
             while (iterator.hasNext() && drainedItems.size() < limit) {
                 var entry = iterator.next();
-                byte[] logicalKeyBytes = extractKeyBytes(entry.key);
+                byte[] logicalKeyBytes = extractKeyBytes(entry.key());
                 if (logicalKeyBytes.length == 0) {
                     continue;
                 }
@@ -254,11 +251,11 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
                     continue;
                 }
 
-                P payload = payloadDeserializer.deserialize(null, entry.value);
+                P payload = payloadDeserializer.deserialize(null, entry.value());
                 drainedItems.add(new ScheduledItem<>(key, payload));
-                queueKeysToDelete.add(entry.key);
+                queueKeysToDelete.add(entry.key());
 
-                if (isImmediate(extractPrefix(entry.key))) {
+                if (isImmediate(extractPrefix(entry.key()))) {
                     drainedImmediateCount++;
                 } else {
                     drainedObservedCount++;

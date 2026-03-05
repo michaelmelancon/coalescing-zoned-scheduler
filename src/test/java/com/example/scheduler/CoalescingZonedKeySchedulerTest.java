@@ -34,7 +34,7 @@ class CoalescingZonedKeySchedulerTest {
     @BeforeEach
     void setUp() {
         scheduler = new CoalescingZonedKeyScheduler<>(
-                new KeyValueStoreCoalescingZonedScheduler<>(new InMemoryByteArrayKeyValueStore(), Serdes.String(),
+                new KeyValueStoreCoalescingZonedScheduler<>(new InMemoryKeyValueStore(), Serdes.String(),
                         org.apache.kafka.common.serialization.Serdes.ByteArray()));
     }
 

@@ -36,12 +36,12 @@ import org.junit.jupiter.api.Test;
 
 class CoalescingZonedSchedulerTest {
 
-    private InMemoryByteArrayKeyValueStore store;
+    private InMemoryKeyValueStore store;
     private KeyValueStoreCoalescingZonedScheduler<String, String> scheduler;
 
     @BeforeEach
     void setUp() {
-        store = new InMemoryByteArrayKeyValueStore();
+        store = new InMemoryKeyValueStore();
         scheduler = new KeyValueStoreCoalescingZonedScheduler<>(store, Serdes.String(), Serdes.String());
     }
 
@@ -88,8 +88,8 @@ class CoalescingZonedSchedulerTest {
 
         assertEquals(1, scheduler.sizeImmediate());
         assertEquals(0, scheduler.sizeDelayed());
-        assertFalse(store.containsRawKey(
-                KeyValueStoreCoalescingZonedScheduler.compositeKey(delayedPosition, keyBytes("alpha"))));
+        assertFalse(store.get(
+                KeyValueStoreCoalescingZonedScheduler.compositeKey(delayedPosition, keyBytes("alpha"))) != null);
 
         List<ScheduledItem<String, String>> drained = scheduler.drain(10, observedAt(20));
 
@@ -218,9 +218,9 @@ class CoalescingZonedSchedulerTest {
 
         assertEquals(List.of("valid"), drainedKeys(drained));
         assertEquals(List.of("payload"), drainedPayloads(drained));
-        assertTrue(store.containsRawKey(malformedKey));
-        assertTrue(store.containsRawKey(nullKey));
-        assertFalse(store.containsRawKey(validKey));
+        assertTrue(store.get(malformedKey) != null);
+        assertTrue(store.get(nullKey) != null);
+        assertFalse(store.get(validKey) != null);
     }
 
     @Test
@@ -278,7 +278,7 @@ class CoalescingZonedSchedulerTest {
     }
 
     private long lookupPosition(String key) {
-        byte[] raw = store.rawGet(KeyValueStoreCoalescingZonedScheduler.reverseLookupKey(keyBytes(key)));
+        byte[] raw = store.get(KeyValueStoreCoalescingZonedScheduler.reverseLookupKey(keyBytes(key)));
         return KeyValueStoreCoalescingZonedScheduler.decodeLong(raw);
     }
 
