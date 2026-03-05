@@ -16,46 +16,25 @@
 
 package com.example.scheduler;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.common.serialization.Serializer;
-
 /**
- * A persistent keyed scheduler backed by a single
- * {@link ByteArrayKeyValueStore}
- * with multiple logical zones, leveraging byte-ordered keys for efficient
- * draining.
+ * A persistent keyed scheduler backed by a {@link SchedulerStore}.
  *
  * <p>
  * The scheduler maintains at most one live scheduled entry per logical key.
- * Immediate entries
- * drain before delayed entries. Re-scheduling coalesces by key rather than
- * preserving every
- * enqueue.
+ * Immediate entries drain before delayed entries. Re-scheduling coalesces by
+ * key rather than preserving every enqueue.
  *
  * <h2>Zone layout</h2>
  * <table>
  * <caption>Zone layout within the backing store</caption>
  * <tr>
  * <th>Zone</th>
- * <th>Prefix range</th>
+ * <th>Position range</th>
  * <th>Purpose</th>
- * </tr>
- * <tr>
- * <td>Reverse lookup</td>
- * <td>0</td>
- * <td>Logical key → current scheduled position</td>
- * </tr>
- * <tr>
- * <td>Metadata</td>
- * <td>1</td>
- * <td>Immediate counter + per-zone counts</td>
  * </tr>
  * <tr>
  * <td>Immediate</td>
@@ -71,39 +50,22 @@ import org.apache.kafka.common.serialization.Serializer;
  *
  * <p>
  * This payload-carrying form is appropriate only when coalescing by logical key
- * is correct.
- * If the same key must preserve multiple outstanding work items independently,
- * this is the wrong
- * abstraction.
+ * is correct. If the same key must preserve multiple outstanding work items
+ * independently, this is the wrong abstraction.
  */
 public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZonedScheduler<K, P> {
 
-    static final long REVERSE_LOOKUP_PREFIX = 0L;
-    static final long METADATA_PREFIX = 1L;
     static final long FIRST_IMMEDIATE_POSITION = 2L;
     static final long DELAYED_BOUNDARY = 1_000_000_000L;
 
-    private static final byte DELIMITER = 0x00;
+    private static final String NEXT_IMMEDIATE_POSITION_KEY = "next-immediate-position";
+    private static final String IMMEDIATE_COUNT_KEY = "immediate-count";
+    private static final String DELAYED_COUNT_KEY = "delayed-count";
 
-    private static final byte[] NEXT_IMMEDIATE_POSITION_KEY = metadataKey("next-immediate-position");
-    private static final byte[] IMMEDIATE_COUNT_KEY = metadataKey("immediate-count");
-    private static final byte[] DELAYED_COUNT_KEY = metadataKey("delayed-count");
+    private final SchedulerStore<K, P> store;
 
-    private final ByteArrayKeyValueStore store;
-    private final Serializer<K> keySerializer;
-    private final Deserializer<K> keyDeserializer;
-    private final Serializer<P> payloadSerializer;
-    private final Deserializer<P> payloadDeserializer;
-
-    public KeyValueStoreCoalescingZonedScheduler(
-            ByteArrayKeyValueStore store,
-            Serde<K> keySerde,
-            Serde<P> payloadSerde) {
+    public KeyValueStoreCoalescingZonedScheduler(SchedulerStore<K, P> store) {
         this.store = store;
-        this.keySerializer = keySerde.serializer();
-        this.keyDeserializer = keySerde.deserializer();
-        this.payloadSerializer = payloadSerde.serializer();
-        this.payloadDeserializer = payloadSerde.deserializer();
     }
 
     /**
@@ -116,23 +78,20 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
      */
     @Override
     public void scheduleNow(K key, P payload) {
-        byte[] keyBytes = serializeKey(key);
-        byte[] lookupKey = reverseLookupKey(keyBytes);
-        byte[] existingPositionBytes = store.get(lookupKey);
+        Long existingPosition = store.getPosition(key);
 
-        if (existingPositionBytes != null) {
-            long existingPosition = decodeLong(existingPositionBytes);
+        if (existingPosition != null) {
             if (isImmediate(existingPosition)) {
                 return;
             }
 
-            store.delete(compositeKey(existingPosition, keyBytes));
+            store.deleteEntry(existingPosition, key);
             adjustCount(DELAYED_COUNT_KEY, -1);
         }
 
         long immediatePosition = nextImmediatePosition();
-        store.put(compositeKey(immediatePosition, keyBytes), serializePayload(payload));
-        store.put(lookupKey, encodeLong(immediatePosition));
+        store.putEntry(immediatePosition, key, payload);
+        store.putPosition(key, immediatePosition);
         adjustCount(IMMEDIATE_COUNT_KEY, 1);
     }
 
@@ -159,34 +118,30 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
                     "epochSeconds must be >= " + DELAYED_BOUNDARY + ", got " + epochSeconds);
         }
 
-        byte[] keyBytes = serializeKey(key);
-        byte[] lookupKey = reverseLookupKey(keyBytes);
-        byte[] existingPositionBytes = store.get(lookupKey);
+        Long existingPosition = store.getPosition(key);
 
-        if (existingPositionBytes != null) {
-            long existingPosition = decodeLong(existingPositionBytes);
+        if (existingPosition != null) {
             if (isImmediate(existingPosition)) {
                 return;
             }
 
-            store.delete(compositeKey(existingPosition, keyBytes));
+            store.deleteEntry(existingPosition, key);
         } else {
             adjustCount(DELAYED_COUNT_KEY, 1);
         }
 
-        store.put(compositeKey(epochSeconds, keyBytes), serializePayload(payload));
-        store.put(lookupKey, encodeLong(epochSeconds));
+        store.putEntry(epochSeconds, key, payload);
+        store.putPosition(key, epochSeconds);
     }
 
     /**
      * Drains up to {@code limit} currently eligible entries: all immediate entries
-     * plus deferred
-     * entries scheduled strictly before {@code deferredCutoffExclusive}.
+     * plus deferred entries scheduled strictly before
+     * {@code deferredCutoffExclusive}.
      */
     @Override
     public List<ScheduledItem<K, P>> drain(int limit, Instant deferredCutoffExclusive) {
-        return drainRange(rangeStartKey(FIRST_IMMEDIATE_POSITION),
-                rangeStartKey(deferredCutoffExclusive.getEpochSecond()), limit);
+        return drainRange(FIRST_IMMEDIATE_POSITION, deferredCutoffExclusive.getEpochSecond(), limit);
     }
 
     /**
@@ -196,17 +151,14 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
      */
     @Override
     public boolean cancel(K key) {
-        byte[] keyBytes = serializeKey(key);
-        byte[] lookupKey = reverseLookupKey(keyBytes);
-        byte[] existingPositionBytes = store.get(lookupKey);
+        Long existingPosition = store.getPosition(key);
 
-        if (existingPositionBytes == null) {
+        if (existingPosition == null) {
             return false;
         }
 
-        long existingPosition = decodeLong(existingPositionBytes);
-        store.delete(compositeKey(existingPosition, keyBytes));
-        store.delete(lookupKey);
+        store.deleteEntry(existingPosition, key);
+        store.deletePosition(key);
         adjustCount(isImmediate(existingPosition) ? IMMEDIATE_COUNT_KEY : DELAYED_COUNT_KEY, -1);
         resetImmediateCounterIfEmpty();
         return true;
@@ -214,17 +166,17 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
 
     @Override
     public boolean isScheduled(K key) {
-        return store.get(reverseLookupKey(serializeKey(key))) != null;
+        return store.getPosition(key) != null;
     }
 
     @Override
     public long sizeImmediate() {
-        return readCount(IMMEDIATE_COUNT_KEY);
+        return store.getMetadata(IMMEDIATE_COUNT_KEY);
     }
 
     @Override
     public long sizeDelayed() {
-        return readCount(DELAYED_COUNT_KEY);
+        return store.getMetadata(DELAYED_COUNT_KEY);
     }
 
     @Override
@@ -232,148 +184,63 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
         return sizeImmediate() + sizeDelayed();
     }
 
-    private List<ScheduledItem<K, P>> drainRange(byte[] fromInclusive, byte[] toExclusive, int limit) {
-        List<byte[]> queueKeysToDelete = new ArrayList<>(limit);
-        List<ScheduledItem<K, P>> drainedItems = new ArrayList<>(limit);
+    private List<ScheduledItem<K, P>> drainRange(long fromPositionInclusive, Long toPositionExclusive, int limit) {
+        List<SchedulerStore.Entry<K, P>> toDelete = new ArrayList<>(limit);
+        List<ScheduledItem<K, P>> drained = new ArrayList<>(limit);
         int drainedImmediateCount = 0;
-        int drainedObservedCount = 0;
+        int drainedDelayedCount = 0;
 
-        try (ByteArrayKeyValueStore.RangeIterator iterator = store.range(fromInclusive, toExclusive)) {
-            while (iterator.hasNext() && drainedItems.size() < limit) {
-                var entry = iterator.next();
-                byte[] logicalKeyBytes = extractKeyBytes(entry.key());
-                if (logicalKeyBytes.length == 0) {
-                    continue;
-                }
+        try (SchedulerStore.EntryIterator<K, P> it = store.scanEntries(fromPositionInclusive, toPositionExclusive)) {
+            while (it.hasNext() && drained.size() < limit) {
+                SchedulerStore.Entry<K, P> entry = it.next();
+                drained.add(new ScheduledItem<>(entry.key(), entry.payload()));
+                toDelete.add(entry);
 
-                K key = keyDeserializer.deserialize(null, logicalKeyBytes);
-                if (key == null) {
-                    continue;
-                }
-
-                P payload = payloadDeserializer.deserialize(null, entry.value());
-                drainedItems.add(new ScheduledItem<>(key, payload));
-                queueKeysToDelete.add(entry.key());
-
-                if (isImmediate(extractPrefix(entry.key()))) {
+                if (isImmediate(entry.position())) {
                     drainedImmediateCount++;
                 } else {
-                    drainedObservedCount++;
+                    drainedDelayedCount++;
                 }
             }
         }
 
-        for (byte[] queueKey : queueKeysToDelete) {
-            store.delete(queueKey);
-            store.delete(reverseLookupKey(extractKeyBytes(queueKey)));
+        for (SchedulerStore.Entry<K, P> entry : toDelete) {
+            store.deleteEntry(entry.position(), entry.key());
+            store.deletePosition(entry.key());
         }
 
         if (drainedImmediateCount > 0) {
             adjustCount(IMMEDIATE_COUNT_KEY, -drainedImmediateCount);
         }
-        if (drainedObservedCount > 0) {
-            adjustCount(DELAYED_COUNT_KEY, -drainedObservedCount);
+        if (drainedDelayedCount > 0) {
+            adjustCount(DELAYED_COUNT_KEY, -drainedDelayedCount);
         }
         if (drainedImmediateCount > 0) {
             resetImmediateCounterIfEmpty();
         }
 
-        return drainedItems;
+        return drained;
     }
 
     private long nextImmediatePosition() {
-        byte[] raw = store.get(NEXT_IMMEDIATE_POSITION_KEY);
-        long nextPosition = (raw != null) ? decodeLong(raw) : FIRST_IMMEDIATE_POSITION;
-        store.put(NEXT_IMMEDIATE_POSITION_KEY, encodeLong(nextPosition + 1));
+        long nextPosition = Math.max(store.getMetadata(NEXT_IMMEDIATE_POSITION_KEY), FIRST_IMMEDIATE_POSITION);
+        store.putMetadata(NEXT_IMMEDIATE_POSITION_KEY, nextPosition + 1);
         return nextPosition;
     }
 
     private void resetImmediateCounterIfEmpty() {
         if (sizeImmediate() == 0) {
-            store.put(NEXT_IMMEDIATE_POSITION_KEY, encodeLong(FIRST_IMMEDIATE_POSITION));
+            store.putMetadata(NEXT_IMMEDIATE_POSITION_KEY, FIRST_IMMEDIATE_POSITION);
         }
     }
 
-    private void adjustCount(byte[] countKey, long delta) {
-        long current = readCount(countKey);
-        store.put(countKey, encodeLong(Math.max(0L, current + delta)));
-    }
-
-    private long readCount(byte[] countKey) {
-        byte[] raw = store.get(countKey);
-        return (raw != null) ? decodeLong(raw) : 0L;
-    }
-
-    private byte[] serializeKey(K key) {
-        return keySerializer.serialize(null, key);
-    }
-
-    private byte[] serializePayload(P payload) {
-        return payloadSerializer.serialize(null, payload);
+    private void adjustCount(String countKey, long delta) {
+        long current = store.getMetadata(countKey);
+        store.putMetadata(countKey, Math.max(0L, current + delta));
     }
 
     static boolean isImmediate(long position) {
         return position >= FIRST_IMMEDIATE_POSITION && position < DELAYED_BOUNDARY;
     }
-
-    static byte[] reverseLookupKey(byte[] logicalKeyBytes) {
-        ByteBuffer buffer = ByteBuffer.allocate(8 + 1 + logicalKeyBytes.length);
-        buffer.putLong(REVERSE_LOOKUP_PREFIX);
-        buffer.put(DELIMITER);
-        buffer.put(logicalKeyBytes);
-        return buffer.array();
-    }
-
-    static byte[] compositeKey(long prefix, byte[] logicalKeyBytes) {
-        ByteBuffer buffer = ByteBuffer.allocate(8 + 1 + logicalKeyBytes.length);
-        buffer.putLong(prefix);
-        buffer.put(DELIMITER);
-        buffer.put(logicalKeyBytes);
-        return buffer.array();
-    }
-
-    static byte[] rangeStartKey(long prefix) {
-        ByteBuffer buffer = ByteBuffer.allocate(9);
-        buffer.putLong(prefix);
-        buffer.put(DELIMITER);
-        return buffer.array();
-    }
-
-    private static byte[] metadataKey(String suffix) {
-        byte[] suffixBytes = suffix.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer buffer = ByteBuffer.allocate(8 + 1 + suffixBytes.length);
-        buffer.putLong(METADATA_PREFIX);
-        buffer.put(DELIMITER);
-        buffer.put(suffixBytes);
-        return buffer.array();
-    }
-
-    static byte[] encodeLong(long value) {
-        ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
-        buffer.putLong(value);
-        return buffer.array();
-    }
-
-    static long decodeLong(byte[] value) {
-        if (value == null || value.length < Long.BYTES) {
-            return 0L;
-        }
-        return ByteBuffer.wrap(value).getLong();
-    }
-
-    static long extractPrefix(byte[] compositeKey) {
-        if (compositeKey == null || compositeKey.length < Long.BYTES) {
-            return 0L;
-        }
-        return ByteBuffer.wrap(compositeKey, 0, Long.BYTES).getLong();
-    }
-
-    static byte[] extractKeyBytes(byte[] compositeKey) {
-        if (compositeKey == null || compositeKey.length <= 9) {
-            return new byte[0];
-        }
-        byte[] logicalKeyBytes = new byte[compositeKey.length - 9];
-        System.arraycopy(compositeKey, 9, logicalKeyBytes, 0, logicalKeyBytes.length);
-        return logicalKeyBytes;
-    }
 }
+
