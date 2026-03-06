@@ -16,33 +16,27 @@
 
 package com.example.scheduler;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 
-import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.common.serialization.Serdes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class CoalescingZonedSchedulerTest {
 
-    private InMemoryByteArrayKeyValueStore store;
+    private InMemorySchedulerStore<String, String> store;
     private KeyValueStoreCoalescingZonedScheduler<String, String> scheduler;
 
     @BeforeEach
     void setUp() {
-        store = new InMemoryByteArrayKeyValueStore();
-        scheduler = new KeyValueStoreCoalescingZonedScheduler<>(store, Serdes.String(), Serdes.String());
+        store = new InMemorySchedulerStore<>();
+        scheduler = new KeyValueStoreCoalescingZonedScheduler<>(store);
     }
 
     @Test
@@ -88,8 +82,6 @@ class CoalescingZonedSchedulerTest {
 
         assertEquals(1, scheduler.sizeImmediate());
         assertEquals(0, scheduler.sizeDelayed());
-        assertFalse(store.containsRawKey(
-                KeyValueStoreCoalescingZonedScheduler.compositeKey(delayedPosition, keyBytes("alpha"))));
 
         List<ScheduledItem<String, String>> drained = scheduler.drain(10, observedAt(20));
 
@@ -186,51 +178,12 @@ class CoalescingZonedSchedulerTest {
     }
 
     @Test
-    void drainReadySkipsMalformedEntriesAndNullDeserializedKeys() {
-        Serde<String> nullableKeySerde = Serdes.serdeFrom(
-                (Serializer<String>) (topic, data) -> (data == null) ? null : data.getBytes(StandardCharsets.UTF_8),
-                (Deserializer<String>) (topic, data) -> {
-                    if (data == null) {
-                        return null;
-                    }
-
-                    String value = new String(data, StandardCharsets.UTF_8);
-                    return value.equals("null-key") ? null : value;
-                });
-        CoalescingZonedScheduler<String, String> nullableScheduler = new KeyValueStoreCoalescingZonedScheduler<>(
-                store,
-                nullableKeySerde, Serdes.String());
-
-        byte[] malformedKey = KeyValueStoreCoalescingZonedScheduler
-                .rangeStartKey(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION);
-        byte[] nullKey = KeyValueStoreCoalescingZonedScheduler.compositeKey(
-                KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION + 1,
-                keyBytes("null-key"));
-        byte[] validKey = KeyValueStoreCoalescingZonedScheduler.compositeKey(
-                KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION + 2,
-                keyBytes("valid"));
-
-        store.put(malformedKey, keyBytes("ignored"));
-        store.put(nullKey, keyBytes("ignored-null"));
-        store.put(validKey, keyBytes("payload"));
-
-        List<ScheduledItem<String, String>> drained = nullableScheduler.drain(10);
-
-        assertEquals(List.of("valid"), drainedKeys(drained));
-        assertEquals(List.of("payload"), drainedPayloads(drained));
-        assertTrue(store.containsRawKey(malformedKey));
-        assertTrue(store.containsRawKey(nullKey));
-        assertFalse(store.containsRawKey(validKey));
-    }
-
-    @Test
-    void privateDrainRangeSupportsOpenEndedUpperBound() throws Exception {
+    void drainRangeSupportsOpenEndedUpperBound() throws Exception {
         scheduler.scheduleNow("immediate", "now");
         scheduler.scheduleLater("observed", "later", observedAt(5));
 
         List<ScheduledItem<String, String>> drained = invokeDrainRange(
-                KeyValueStoreCoalescingZonedScheduler
-                        .rangeStartKey(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION),
+                KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION,
                 null,
                 10);
 
@@ -240,59 +193,30 @@ class CoalescingZonedSchedulerTest {
     }
 
     @Test
-    void staticHelpersEncodeAndExtractValues() {
-        byte[] logicalKey = keyBytes("alpha");
-        byte[] compositeKey = KeyValueStoreCoalescingZonedScheduler.compositeKey(42L, logicalKey);
-
+    void isImmediateCoversAllBranches() {
         assertTrue(KeyValueStoreCoalescingZonedScheduler
                 .isImmediate(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION));
-        assertTrue(
-                KeyValueStoreCoalescingZonedScheduler
-                        .isImmediate(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY - 1));
+        assertTrue(KeyValueStoreCoalescingZonedScheduler
+                .isImmediate(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY - 1));
         assertFalse(KeyValueStoreCoalescingZonedScheduler
                 .isImmediate(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION - 1));
         assertFalse(KeyValueStoreCoalescingZonedScheduler
                 .isImmediate(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY));
-
-        assertEquals(42L,
-                KeyValueStoreCoalescingZonedScheduler
-                        .decodeLong(KeyValueStoreCoalescingZonedScheduler.encodeLong(42L)));
-        assertEquals(0L, KeyValueStoreCoalescingZonedScheduler.decodeLong(null));
-        assertEquals(0L, KeyValueStoreCoalescingZonedScheduler.decodeLong(new byte[] { 1, 2, 3 }));
-
-        assertArrayEquals(logicalKey, KeyValueStoreCoalescingZonedScheduler.extractKeyBytes(compositeKey));
-        assertEquals(42L, KeyValueStoreCoalescingZonedScheduler.extractPrefix(compositeKey));
-        assertEquals(0L, KeyValueStoreCoalescingZonedScheduler.extractPrefix(null));
-        assertEquals(0L, KeyValueStoreCoalescingZonedScheduler.extractPrefix(new byte[] { 1, 2, 3 }));
-        assertArrayEquals(new byte[0], KeyValueStoreCoalescingZonedScheduler.extractKeyBytes(null));
-        assertArrayEquals(new byte[0], KeyValueStoreCoalescingZonedScheduler.extractKeyBytes(new byte[] { 1, 2, 3 }));
-
-        byte[] reverseLookup = KeyValueStoreCoalescingZonedScheduler.reverseLookupKey(logicalKey);
-        byte[] rangeStart = KeyValueStoreCoalescingZonedScheduler.rangeStartKey(42L);
-
-        assertEquals(KeyValueStoreCoalescingZonedScheduler.REVERSE_LOOKUP_PREFIX,
-                KeyValueStoreCoalescingZonedScheduler.extractPrefix(reverseLookup));
-        assertArrayEquals(logicalKey, KeyValueStoreCoalescingZonedScheduler.extractKeyBytes(reverseLookup));
-        assertEquals(42L, KeyValueStoreCoalescingZonedScheduler.extractPrefix(rangeStart));
-        assertArrayEquals(new byte[0], KeyValueStoreCoalescingZonedScheduler.extractKeyBytes(rangeStart));
     }
 
     private long lookupPosition(String key) {
-        byte[] raw = store.rawGet(KeyValueStoreCoalescingZonedScheduler.reverseLookupKey(keyBytes(key)));
-        return KeyValueStoreCoalescingZonedScheduler.decodeLong(raw);
+        Long pos = store.getPosition(key);
+        return (pos != null) ? pos : 0L;
     }
 
-    private List<ScheduledItem<String, String>> invokeDrainRange(byte[] fromInclusive, byte[] toExclusive, int limit)
+    @SuppressWarnings("unchecked")
+    private List<ScheduledItem<String, String>> invokeDrainRange(long fromInclusive, Long toExclusive, int limit)
             throws Exception {
-        Method method = KeyValueStoreCoalescingZonedScheduler.class.getDeclaredMethod("drainRange", byte[].class,
-                byte[].class,
+        Method method = KeyValueStoreCoalescingZonedScheduler.class.getDeclaredMethod("drainRange", long.class,
+                Long.class,
                 int.class);
         method.setAccessible(true);
-
-        @SuppressWarnings("unchecked")
-        List<ScheduledItem<String, String>> drained = (List<ScheduledItem<String, String>>) method.invoke(scheduler,
-                fromInclusive, toExclusive, limit);
-        return drained;
+        return (List<ScheduledItem<String, String>>) method.invoke(scheduler, fromInclusive, toExclusive, limit);
     }
 
     private static List<String> drainedKeys(List<ScheduledItem<String, String>> items) {
@@ -303,11 +227,8 @@ class CoalescingZonedSchedulerTest {
         return items.stream().map(ScheduledItem::payload).toList();
     }
 
-    private static byte[] keyBytes(String value) {
-        return value.getBytes(StandardCharsets.UTF_8);
-    }
-
     private static Instant observedAt(long offsetSeconds) {
         return Instant.ofEpochSecond(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY + offsetSeconds);
     }
 }
+

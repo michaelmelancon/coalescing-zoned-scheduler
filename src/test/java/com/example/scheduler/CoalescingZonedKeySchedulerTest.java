@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Instant;
 import java.util.List;
 
-import org.apache.kafka.common.serialization.Serdes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -34,8 +33,7 @@ class CoalescingZonedKeySchedulerTest {
     @BeforeEach
     void setUp() {
         scheduler = new CoalescingZonedKeyScheduler<>(
-                new KeyValueStoreCoalescingZonedScheduler<>(new InMemoryByteArrayKeyValueStore(), Serdes.String(),
-                        org.apache.kafka.common.serialization.Serdes.ByteArray()));
+                new KeyValueStoreCoalescingZonedScheduler<>(new InMemorySchedulerStore<>()));
     }
 
     @Test
