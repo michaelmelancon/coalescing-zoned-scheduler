@@ -74,7 +74,7 @@ public class InMemorySchedulerStore<K, P> implements SchedulerStore<K, P> {
     }
 
     @Override
-    public EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive) {
+    public EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive, int maxResults) {
         NavigableMap<Long, LinkedHashMap<K, P>> range = (toPositionExclusive == null)
                 ? entries.tailMap(fromPositionInclusive, true)
                 : entries.subMap(fromPositionInclusive, true, toPositionExclusive, false);
@@ -83,7 +83,13 @@ public class InMemorySchedulerStore<K, P> implements SchedulerStore<K, P> {
         for (var posEntry : range.entrySet()) {
             long pos = posEntry.getKey();
             for (var kv : posEntry.getValue().entrySet()) {
+                if (snapshot.size() >= maxResults) {
+                    break;
+                }
                 snapshot.add(new Entry<>(pos, kv.getKey(), kv.getValue()));
+            }
+            if (snapshot.size() >= maxResults) {
+                break;
             }
         }
         return new SnapshotEntryIterator<>(snapshot);

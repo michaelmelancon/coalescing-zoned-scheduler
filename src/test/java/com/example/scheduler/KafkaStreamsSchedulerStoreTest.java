@@ -75,7 +75,7 @@ class KafkaStreamsSchedulerStoreTest {
         store.putEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, "alpha", "payload");
 
         try (var it = store.scanEntries(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION,
-                KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY)) {
+                KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY, Integer.MAX_VALUE)) {
             assertTrue(it.hasNext());
             SchedulerStore.Entry<String, String> e = it.next();
             assertEquals(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, e.position());
@@ -91,7 +91,7 @@ class KafkaStreamsSchedulerStoreTest {
         store.deleteEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, "alpha");
 
         try (var it = store.scanEntries(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION,
-                KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY)) {
+                KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY, Integer.MAX_VALUE)) {
             assertFalse(it.hasNext());
         }
     }
@@ -101,7 +101,8 @@ class KafkaStreamsSchedulerStoreTest {
         store.putEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, "alpha", "now");
         store.putEntry(KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY + 5, "beta", "later");
 
-        try (var it = store.scanEntries(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, null)) {
+        try (var it = store.scanEntries(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, null,
+                Integer.MAX_VALUE)) {
             assertTrue(it.hasNext());
             assertEquals("alpha", it.next().key());
             assertTrue(it.hasNext());
@@ -127,15 +128,18 @@ class KafkaStreamsSchedulerStoreTest {
 
         long base = KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION;
         byte[] malformedKey = KafkaStreamsSchedulerStore.rangeStartKey(base);
-        byte[] nullKeyEntry = KafkaStreamsSchedulerStore.compositeKey(base + 1, "null-key".getBytes(StandardCharsets.UTF_8));
-        byte[] validKeyEntry = KafkaStreamsSchedulerStore.compositeKey(base + 2, "valid".getBytes(StandardCharsets.UTF_8));
+        byte[] nullKeyEntry = KafkaStreamsSchedulerStore.compositeKey(base + 1,
+                "null-key".getBytes(StandardCharsets.UTF_8));
+        byte[] validKeyEntry = KafkaStreamsSchedulerStore.compositeKey(base + 2,
+                "valid".getBytes(StandardCharsets.UTF_8));
 
         kafkaStore.put(malformedKey, "ignored".getBytes(StandardCharsets.UTF_8));
         kafkaStore.put(nullKeyEntry, "ignored-null".getBytes(StandardCharsets.UTF_8));
         kafkaStore.put(validKeyEntry, "payload".getBytes(StandardCharsets.UTF_8));
 
         List<SchedulerStore.Entry<String, String>> collected = new java.util.ArrayList<>();
-        try (var it = nullableStore.scanEntries(base, KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY)) {
+        try (var it = nullableStore.scanEntries(base, KeyValueStoreCoalescingZonedScheduler.DELAYED_BOUNDARY,
+                Integer.MAX_VALUE)) {
             while (it.hasNext()) {
                 collected.add(it.next());
             }
@@ -144,6 +148,21 @@ class KafkaStreamsSchedulerStoreTest {
         assertEquals(1, collected.size());
         assertEquals("valid", collected.get(0).key());
         assertEquals("payload", collected.get(0).payload());
+    }
+
+    @Test
+    void scanEntriesHonorsMaxResults() {
+        store.putEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, "alpha", "a");
+        store.putEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION + 1, "beta", "b");
+        store.putEntry(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION + 2, "gamma", "c");
+
+        try (var it = store.scanEntries(KeyValueStoreCoalescingZonedScheduler.FIRST_IMMEDIATE_POSITION, null, 2)) {
+            assertTrue(it.hasNext());
+            assertEquals("alpha", it.next().key());
+            assertTrue(it.hasNext());
+            assertEquals("beta", it.next().key());
+            assertFalse(it.hasNext());
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -32,7 +32,7 @@ class InMemorySchedulerStoreTest {
         var store = new InMemorySchedulerStore<String, String>();
         store.deleteEntry(42L, "alpha");
 
-        try (var it = store.scanEntries(0L, null)) {
+        try (var it = store.scanEntries(0L, null, Integer.MAX_VALUE)) {
             assertFalse(it.hasNext());
         }
     }
@@ -45,7 +45,7 @@ class InMemorySchedulerStoreTest {
 
         store.deleteEntry(42L, "alpha");
 
-        try (var it = store.scanEntries(42L, null)) {
+        try (var it = store.scanEntries(42L, null, Integer.MAX_VALUE)) {
             assertTrue(it.hasNext());
             assertEquals("beta", it.next().key());
             assertFalse(it.hasNext());
@@ -56,9 +56,25 @@ class InMemorySchedulerStoreTest {
     void scanEntryIteratorThrowsNoSuchElementWhenExhausted() {
         var store = new InMemorySchedulerStore<String, String>();
 
-        try (var it = store.scanEntries(0L, null)) {
+        try (var it = store.scanEntries(0L, null, Integer.MAX_VALUE)) {
             assertFalse(it.hasNext());
             assertThrows(NoSuchElementException.class, it::next);
+        }
+    }
+
+    @Test
+    void scanEntriesHonorsMaxResults() {
+        var store = new InMemorySchedulerStore<String, String>();
+        store.putEntry(1L, "alpha", "a");
+        store.putEntry(2L, "beta", "b");
+        store.putEntry(3L, "gamma", "c");
+
+        try (var it = store.scanEntries(1L, null, 2)) {
+            assertTrue(it.hasNext());
+            assertEquals("alpha", it.next().key());
+            assertTrue(it.hasNext());
+            assertEquals("beta", it.next().key());
+            assertFalse(it.hasNext());
         }
     }
 }

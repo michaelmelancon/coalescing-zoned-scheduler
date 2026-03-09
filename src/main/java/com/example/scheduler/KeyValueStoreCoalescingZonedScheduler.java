@@ -190,7 +190,8 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
         int drainedImmediateCount = 0;
         int drainedDelayedCount = 0;
 
-        try (SchedulerStore.EntryIterator<K, P> it = store.scanEntries(fromPositionInclusive, toPositionExclusive)) {
+        try (SchedulerStore.EntryIterator<K, P> it = store.scanEntries(fromPositionInclusive, toPositionExclusive,
+                limit)) {
             while (it.hasNext() && drained.size() < limit) {
                 SchedulerStore.Entry<K, P> entry = it.next();
                 drained.add(new ScheduledItem<>(entry.key(), entry.payload()));
@@ -243,4 +244,3 @@ public class KeyValueStoreCoalescingZonedScheduler<K, P> implements CoalescingZo
         return position >= FIRST_IMMEDIATE_POSITION && position < DELAYED_BOUNDARY;
     }
 }
-

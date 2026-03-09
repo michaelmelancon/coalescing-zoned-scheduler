@@ -60,8 +60,10 @@ public interface SchedulerStore<K, P> {
      * Returns an iterator over scheduled entries whose zone position falls in
      * [{@code fromPositionInclusive}, {@code toPositionExclusive}), ordered by
      * ascending position. A {@code null} upper bound means no limit.
+     *
+     * @param maxResults maximum number of entries the iterator will return
      */
-    EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive);
+    EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive, int maxResults);
 
     /**
      * Returns the long value stored under {@code key}, or {@code 0} if absent.

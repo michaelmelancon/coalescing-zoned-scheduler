@@ -115,13 +115,13 @@ public class KafkaStreamsSchedulerStore<K, P> implements SchedulerStore<K, P> {
     }
 
     @Override
-    public EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive) {
+    public EntryIterator<K, P> scanEntries(long fromPositionInclusive, Long toPositionExclusive, int maxResults) {
         byte[] fromKey = rangeStartKey(fromPositionInclusive);
         byte[] toKey = (toPositionExclusive == null) ? null : rangeStartKey(toPositionExclusive);
 
         List<Entry<K, P>> snapshot = new ArrayList<>();
         try (KeyValueIterator<byte[], byte[]> it = delegate.range(fromKey, toKey)) {
-            while (it.hasNext()) {
+            while (it.hasNext() && snapshot.size() < maxResults) {
                 KeyValue<byte[], byte[]> kv = it.next();
                 byte[] logicalKeyBytes = extractKeyBytes(kv.key);
                 if (logicalKeyBytes.length == 0) {
