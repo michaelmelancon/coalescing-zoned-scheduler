@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.scheduler;
+package dev.melancon.scheduler;
 
 /**
  * Backing store contract for {@link KeyValueStoreCoalescingZonedScheduler}.
