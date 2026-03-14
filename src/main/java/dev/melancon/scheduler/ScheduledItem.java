@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.scheduler;
+package dev.melancon.scheduler;
 
 /**
  * A drained scheduled item consisting of its logical key and payload.

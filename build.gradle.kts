@@ -3,7 +3,7 @@ plugins {
     jacoco
 }
 
-group = "com.example"
+group = "dev.melancon"
 version = "0.1.0"
 description = "Persistent keyed work scheduler for stateful systems."
 

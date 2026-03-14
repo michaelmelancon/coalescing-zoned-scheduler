@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.scheduler;
+package dev.melancon.scheduler;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;

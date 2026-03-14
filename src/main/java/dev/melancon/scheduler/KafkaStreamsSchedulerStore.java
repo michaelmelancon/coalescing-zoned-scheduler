@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.scheduler;
+package dev.melancon.scheduler;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;

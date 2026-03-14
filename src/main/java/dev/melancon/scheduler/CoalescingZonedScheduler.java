@@ -1,4 +1,4 @@
-package com.example.scheduler;
+package dev.melancon.scheduler;
 
 import java.time.Instant;
 import java.util.List;
